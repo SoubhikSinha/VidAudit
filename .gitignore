@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# CUSTOM
+graphify-out/
+temp_audit_video.mp4

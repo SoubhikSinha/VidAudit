@@ -66,7 +66,7 @@ class VideoIndexerService:
          'quiet': False,
          'no_warnings': False,
     # Adding options:
-         'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+         'extractor_args': {'youtube': {'player_client': ['android', 'web']}}, # Force YouTube to use a specific player client (Android first then web if fails)
          'http_headers': {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
