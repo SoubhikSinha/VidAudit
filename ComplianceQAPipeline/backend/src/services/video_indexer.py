@@ -44,7 +44,7 @@ class VideoIndexerService:
         )
         headers = {"Authorization": f"Bearer {arm_access_token}"}
         payload = {"permissionType": "Contributor", "scope": "Account"}
-        response = requests.post(url, headers=headers, json=payload)
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
         if response.status_code != 200:
             raise Exception(f"Failed to get VI Account Token: {response.text}")
         return response.json().get("accessToken")
@@ -109,7 +109,7 @@ class VideoIndexerService:
         # Openning file in binary mode and stream it to Azure
         with open(video_path, 'rb') as video_file:
             files = {'file': video_file}
-            response = requests.post(api_url, params=params, files=files)
+            response = requests.post(api_url, params=params, files=files, timeout=600)
         
         if response.status_code != 200:
             raise Exception(f"Azure Upload Failed: {response.text}")
@@ -123,15 +123,25 @@ class VideoIndexerService:
         Returns:
             dict: The final JSON response from Azure Video Indexer once processing is complete."""
         logger.info(f"Waiting for video {video_id} to process...")
-        while True:
-            arm_token = self.get_access_token()
-            vi_token = self.get_account_token(arm_token)
-            
-            url = f"https://api.videoindexer.ai/{self.location}/Accounts/{self.account_id}/Videos/{video_id}/Index"
-            params = {"accessToken": vi_token}
-            response = requests.get(url, params=params)
+        deadline = time.monotonic() + int(os.getenv("VI_MAX_WAIT_SECONDS", "1200"))
+        url = f"https://api.videoindexer.ai/{self.location}/Accounts/{self.account_id}/Videos/{video_id}/Index"
+        vi_token, token_at = None, 0.0
+        while time.monotonic() < deadline:
+            if vi_token is None or time.monotonic() - token_at > 600:  # VI token lives ~1h; refresh every 10 min
+                vi_token = self.get_account_token(self.get_access_token())
+                token_at = time.monotonic()
+            response = requests.get(url, params={"accessToken": vi_token}, timeout=60)
+            if response.status_code == 401:
+                vi_token = None
+                continue
+            if response.status_code == 429 or response.status_code >= 500:
+                logger.warning(f"VI returned {response.status_code}, backing off")
+                time.sleep(60)
+                continue
+            if response.status_code != 200:
+                raise Exception(f"VI status check failed ({response.status_code}): {response.text[:200]}")
             data = response.json()
-            
+
             state = data.get("state")
             if state == "Processed":
                 return data
@@ -139,9 +149,10 @@ class VideoIndexerService:
                 raise Exception("Video Indexing Failed in Azure.")
             elif state == "Quarantined":
                 raise Exception("Video Quarantined (Copyright/Content Policy Violation).")
-            
+
             logger.info(f"Status: {state}... waiting 30s")
             time.sleep(30)
+        raise Exception(f"Video Indexer timed out after {os.getenv('VI_MAX_WAIT_SECONDS', '1200')}s")
 
     def extract_data(self, vi_json):
         """Parses the JSON into our State format.

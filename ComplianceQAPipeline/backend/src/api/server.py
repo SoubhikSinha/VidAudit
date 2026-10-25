@@ -1,3 +1,5 @@
+import asyncio
+import os
 import uuid        # Generate unique session IDs
 import logging     # Application logging
 from fastapi import FastAPI, HTTPException  
@@ -121,6 +123,11 @@ class AuditResponse(BaseModel):
     status: str                               # PASS or FAIL
     final_report: str                         # AI-generated summary
     compliance_results: List[ComplianceIssue] # List of violations (can be empty)
+    timings: dict = {}                        # Per-stage latency in seconds
+    errors: List[str] = []                    # System errors (HTTP 200 + FAIL can hide these)
+
+# Caps concurrent audits so overload queues instead of exhausting Video Indexer / OpenAI quotas
+audit_semaphore = asyncio.Semaphore(int(os.getenv("MAX_CONCURRENT_AUDITS", "5")))
 
 
 # ========== STEP 7: DEFINING MAIN ENDPOINT ==========
@@ -173,7 +180,8 @@ async def audit_video(request: AuditRequest):
     try:
         # ========== INVOKING LANGGRAPH WORKFLOW ==========
         # This is the SAME logic from main.py - just wrapped in an API
-        final_state = compliance_graph.invoke(initial_inputs)
+        async with audit_semaphore:
+            final_state = await compliance_graph.ainvoke(initial_inputs)  # sync nodes run in a threadpool
         # ↑ Blocking call - waits for entire workflow to complete
         # ↑ Flow: START → Indexer → Auditor → END
         # ↑ Returns: Final state dictionary with all results
@@ -193,7 +201,9 @@ async def audit_video(request: AuditRequest):
             
             final_report=final_state.get("final_report", "No report generated."),
             
-            compliance_results=final_state.get("compliance_results", [])
+            compliance_results=final_state.get("compliance_results", []),
+            timings=final_state.get("timings", {}),
+            errors=final_state.get("errors", [])
             # Returns empty list [] if no violations
         )
         # FastAPI automatically converts this Pydantic object to JSON

@@ -44,3 +44,6 @@ class VideoAuditState(TypedDict):
   # --- System Observability ---
   # Appends system-level errors / crashes (e.g., API timeouts) without halting execution logic.
   errors: Annotated[List[str], operator.add]
+
+  # Per-stage latency in seconds (download/upload/vi_wait/rag/llm); merged across nodes.
+  timings: Annotated[Dict[str, float], operator.or_]

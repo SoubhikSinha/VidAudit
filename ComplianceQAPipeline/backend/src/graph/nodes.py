@@ -2,6 +2,7 @@ import json
 import os
 import logging
 import re  # <--- Added Regex for cleaning
+import time
 from typing import Dict, Any, List
 
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
@@ -35,19 +36,25 @@ def index_video_node(state: VideoAuditState) -> Dict[str, Any]:
     
     logger.info(f"--- [Node: Indexer] Processing: {video_url} ---")
     
-    local_filename = "temp_audit_video.mp4"
-    
+    os.makedirs("tmp", exist_ok=True)
+    local_filename = f"tmp/{video_id_input}.mp4"  # unique per request so concurrent audits don't collide
+    timings: Dict[str, float] = {}
+
     try:
         vi_service = VideoIndexerService()
         
         # 1. DOWNLOADING THE VIDEO
         if "youtube.com" in video_url or "youtu.be" in video_url: # Checking for valid YouTube URL
+            t = time.perf_counter()
             local_path = vi_service.download_youtube_video(video_url, output_path=local_filename)
+            timings["download"] = round(time.perf_counter() - t, 2)
         else:
             raise Exception("Please provide a valid YouTube URL for this test.")
 
         # 2. UPLOADING TO AZURE VIDEO INDEXER
+        t = time.perf_counter()
         azure_video_id = vi_service.upload_video(local_path, video_name=video_id_input)
+        timings["upload"] = round(time.perf_counter() - t, 2)
         logger.info(f"Upload Success. Azure ID: {azure_video_id}")
         
         # 3. CLEANING UP
@@ -55,13 +62,15 @@ def index_video_node(state: VideoAuditState) -> Dict[str, Any]:
             os.remove(local_path) # Once video is uploaded to Azure, we can delete the local copy to save space.
 
         # 4. WAITING TIME FOR PROCESSING (ASYNC)
+        t = time.perf_counter()
         raw_insights = vi_service.wait_for_processing(azure_video_id)
+        timings["vi_wait"] = round(time.perf_counter() - t, 2)
         
         # 5. EXTRACTING CLEAN DATA FROM RAW INSIGHTS
         clean_data = vi_service.extract_data(raw_insights)
         
         logger.info("--- [Node: Indexer] Extraction Complete ---")
-        return clean_data
+        return {**clean_data, "timings": timings}
 
     except Exception as e:
         logger.error(f"Video Indexer Failed: {e}")
@@ -69,8 +78,12 @@ def index_video_node(state: VideoAuditState) -> Dict[str, Any]:
             "errors": [str(e)],
             "final_status": "FAIL",
             "transcript": "", 
-            "ocr_text": []
+            "ocr_text": [],
+            "timings": timings
         }
+    finally:
+        if os.path.exists(local_filename):
+            os.remove(local_filename)
 
 # --- NODE 2: THE COMPLIANCE AUDITOR ---
 def audit_content_node(state: VideoAuditState) -> Dict[str, Any]:
@@ -88,20 +101,25 @@ def audit_content_node(state: VideoAuditState) -> Dict[str, Any]:
     if not transcript:
         logger.warning("No transcript available. Skipping Audit.")
         return {
-            "final_status": "FAIL",
-            "final_report": "Audit skipped because video processing failed (No Transcript)."
+            "final_status": "NO_TRANSCRIPT",  # distinct from a compliance FAIL so metrics don't count it as a verdict
+            "final_report": "Audit skipped because video processing failed (No Transcript).",
+            "errors": ["No Transcript"]
         }
 
     # Initializing Azure Service Clients
     llm = AzureChatOpenAI(
         azure_deployment=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT"),
         openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-        temperature=0.0
+        temperature=0.0,
+        timeout=120,
+        max_retries=5,  # backoff on Azure OpenAI 429s
     )
 
     embeddings = AzureOpenAIEmbeddings(
         azure_deployment="text-embedding-3-small",
         openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+        timeout=60,
+        max_retries=5,
     )
 
     vector_store = AzureSearch(
@@ -114,7 +132,9 @@ def audit_content_node(state: VideoAuditState) -> Dict[str, Any]:
     # RAG Retrieval
     ocr_text = state.get("ocr_text", []) # Extracting OCR text from the state, defaulting to an empty list if not present
     query_text = f"{transcript} {' '.join(ocr_text)}"
+    t = time.perf_counter()
     docs = vector_store.similarity_search(query_text, k=3) # k=3 : number of top documents to retrieve for context
+    timings = {"rag": round(time.perf_counter() - t, 2)}
     
     retrieved_rules = "\n\n".join([doc.page_content for doc in docs])
     
@@ -152,10 +172,12 @@ def audit_content_node(state: VideoAuditState) -> Dict[str, Any]:
     """
 
     try:
+        t = time.perf_counter()
         response = llm.invoke([
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_message)
         ])
+        timings["llm"] = round(time.perf_counter() - t, 2)
         
         # --- FIX: Cleaning Markdown if present (```json ... ```) ---
         content = response.content
@@ -168,7 +190,8 @@ def audit_content_node(state: VideoAuditState) -> Dict[str, Any]:
         return {
             "compliance_results": audit_data.get("compliance_results", []),
             "final_status": audit_data.get("status", "FAIL"),
-            "final_report": audit_data.get("final_report", "No report generated.")
+            "final_report": audit_data.get("final_report", "No report generated."),
+            "timings": timings
         }
 
     except Exception as e:
@@ -177,5 +200,6 @@ def audit_content_node(state: VideoAuditState) -> Dict[str, Any]:
         logger.error(f"Raw LLM Response: {response.content if 'response' in locals() else 'None'}")
         return {
             "errors": [str(e)],
-            "final_status": "FAIL"
+            "final_status": "FAIL",
+            "timings": timings
         }
