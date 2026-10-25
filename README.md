@@ -181,6 +181,20 @@ uv run python backend/loadtest/report.py backend/loadtest/results.csv 5 <wall_cl
 
 **Issues found and fixed during testing:** shared temp-file collision under concurrency, blocking graph call serializing the server, unbounded Video Indexer polling, empty-transcript videos reported as compliance FAILs, and a misspelled App Insights env var that silently disabled telemetry.
 
+### 📈 Projected Production Capacity
+
+> **Extrapolated, not measured.** Video Indexer wait dominates latency and parallelizes, so throughput scales roughly linearly with concurrency: measured ≈ 37 audits/hr per concurrent slot (183/hr ÷ 5). Holding this at higher concurrency assumes a raised Video Indexer quota, multiple uvicorn workers, and Azure OpenAI TPM headroom.
+
+| Concurrent audits | Audits / hour | Audits / day (24h) |
+|---|---|---|
+| 5 _(measured)_ | ~183 | ~4.4k |
+| 20 | ~730 | ~17.5k |
+| 50 | ~1,800 | ~44k |
+
+- **Latency per audit:** ~1–2 min (p50 ≈ 73s, p95 ≈ 100–130s), independent of load while under quota.
+- **Vs. manual review:** at an assumed ~10 min per ad, one reviewer handles ~6 ads/hr, so 20 concurrent audits ≈ 120 reviewers' first-pass throughput.
+- **Next scaling limits:** Video Indexer concurrent-indexing quota, then Azure OpenAI TPM, then YouTube download rate-limits.
+
 ## 📂 Project Structure
 
 ```
