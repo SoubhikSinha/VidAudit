@@ -12,7 +12,6 @@ Give VidAudit a YouTube URL. It transcribes the video, reads the on-screen text,
 
 ## 📑 Table of Contents
 
-- [📸 Demo](#-demo)
 - [📖 Overview](#-overview)
 - [⚡ Features](#-features)
 - [🏗️ Architecture](#️-architecture)
@@ -21,16 +20,6 @@ Give VidAudit a YouTube URL. It transcribes the video, reads the on-screen text,
 - [🚀 Usage](#-usage)
 - [📊 Load Test Results](#-load-test-results)
 - [📂 Project Structure](#-project-structure)
-
-## 📸 Demo
-
-<!-- Add screenshots to a DemoPics/ folder and link them here, e.g.:
-![Swagger UI](DemoPics/swagger.png)
-![Application Map](DemoPics/app-insights-map.png)
-![LangSmith trace](DemoPics/langsmith-trace.png)
--->
-
-_Swagger UI (`/docs`), Application Insights Application Map and a LangSmith trace go here._
 
 ## 📖 Overview
 
